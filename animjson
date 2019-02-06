@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+import struct
+import argparse
+import json
+
+def parseAnim(data):
+    result = {}
+    offset = 0
+    
+    version, sub_version, base_priority, duration = struct.unpack_from("<HHLf", data, offset)
+    offset = offset + 12
+    
+    emote_name = ""
+    while data[offset] != 0:
+        emote_name = emote_name + chr(data[offset])
+        offset = offset + 1
+    
+    offset = offset + 1
+    
+    loop_in_point, loop_out_point, loop, ease_in_duration, \
+        ease_out_duration, hand_pose, num_joints \
+        = struct.unpack_from("<ffLffLL", data, offset)
+    
+    offset = offset + 28
+    
+    result = {
+        "version": version,
+        "sub_version": sub_version,
+        "base_priority": base_priority,
+        "duration": duration,
+        "emote_name": emote_name,
+        "loop_in_point": loop_in_point,
+        "loop_out_point": loop_out_point,
+        "loop": loop,
+        "ease_in_duration": ease_in_duration,
+        "ease_out_duration": ease_out_duration,
+        "hand_pose": hand_pose,
+        "joints": [],
+        "constraints": []
+    }
+    
+    for i in range(num_joints):
+        joint_name = ""
+        while data[offset] != 0:
+            joint_name = joint_name + chr(data[offset])
+            offset = offset + 1
+        
+        offset = offset + 1
+        
+        joint_priority, num_rot_keys = struct.unpack_from("<LL", data, offset)
+        offset = offset + 8
+        
+        jointResult = {
+            "name": joint_name,
+            "priority": joint_priority,
+            "rotation_keys": [],
+            "position_keys": []
+        }
+        
+        for x in range(num_rot_keys):
+            time, rot_x, rot_y, rot_z = struct.unpack_from("<HHHH", data, offset)
+            jointResult["rotation_keys"].append({
+                "time": time,
+                "x": ((rot_x/0xFFFF)-0.5)*2,
+                "y": ((rot_y/0xFFFF)-0.5)*2,
+                "z": ((rot_z/0xFFFF)-0.5)*2
+            })
+            offset = offset + 8
+        
+        num_pos_keys, = struct.unpack_from("<L", data, offset)
+        offset = offset + 4
+        
+        for x in range(num_pos_keys):
+            time, rot_x, rot_y, rot_z = struct.unpack_from("<HHHH", data, offset)
+            jointResult["position_keys"].append({
+                "time": time,
+                "x": ((rot_x/0xFFFF)-0.5)*5,
+                "y": ((rot_y/0xFFFF)-0.5)*5,
+                "z": ((rot_z/0xFFFF)-0.5)*5
+            })
+            offset = offset + 8
+        
+        result["joints"].append(jointResult)
+    
+    num_constraints, = struct.unpack_from("<L", data, offset)
+    offset = offset + 4
+    
+    for i in range(num_constraints):
+        chain_length, constraint_type, source_volume, source_offset_x, \
+        source_offset_y, source_offset_z, target_volume, target_offset_x, \
+        target_offset_y, target_offset_z, target_dir_x, target_dir_y, \
+        target_dir_z, ease_in_start, ease_in_stop, ease_out_start, \
+        ease_out_stop = struct.unpack_from("<BB16sfff16sffffffffff", data, offset)
+        offset = offset + 86
+        
+        result["constraints"].append({
+            "chain_length": chain_length,
+            "constraint_type": constraint_type,
+            "source_volume": source_volume.strip(b"\0").decode(),
+            "source_offset": [source_offset_x, source_offset_y, source_offset_z],
+            "target_volume": target_volume.strip(b"\0").decode(),
+            "target_offset": [target_offset_x, target_offset_y, target_offset_z],
+            "target_dir": [target_dir_x, target_dir_y, target_dir_z],
+            "ease_in_start": ease_in_start,
+            "ease_in_stop": ease_in_stop,
+            "ease_out_start": ease_out_start,
+            "ease_out_stop": ease_out_stop
+        })
+        
+    return result
+
+
+def parseObj(data):
+    result = b""
+    result += struct.pack("<HHLf",
+        data["version"],
+        data["sub_version"],
+        data["base_priority"],
+        data["duration"]
+    )
+    result += data["emote_name"].encode() + b"\0"
+    result += struct.pack("<ffLffLL",
+        data["loop_in_point"],
+        data["loop_out_point"],
+        data["loop"],
+        data["ease_in_duration"],
+        data["ease_out_duration"],
+        data["hand_pose"],
+        len(data["joints"])
+    )
+    
+    for joint in data["joints"]:
+        result += joint["name"].encode() + b"\0"
+        
+        result += struct.pack("<LL",
+            joint["priority"],
+            len(joint["rotation_keys"])
+        )
+        
+        for rot_key in joint["rotation_keys"]:
+            rot_key["x"] = min(max(-1,rot_key["x"]),1)
+            rot_key["y"] = min(max(-1,rot_key["y"]),1)
+            rot_key["z"] = min(max(-1,rot_key["z"]),1)
+            result += struct.pack("<HHHH",
+                rot_key["time"],
+                int(((rot_key["x"]/2)+0.5)*0xFFFF),
+                int(((rot_key["y"]/2)+0.5)*0xFFFF),
+                int(((rot_key["z"]/2)+0.5)*0xFFFF)
+            )
+        
+        result += struct.pack("<L", len(joint["position_keys"]))
+        
+        for pos_key in joint["position_keys"]:
+            pos_key["x"] = min(max(-1,pos_key["x"]),1)
+            pos_key["y"] = min(max(-1,pos_key["y"]),1)
+            pos_key["z"] = min(max(-1,pos_key["z"]),1)
+            result += struct.pack("<HHHH",
+                pos_key["time"],
+                int(((pos_key["x"]/5)+0.5)*0xFFFF),
+                int(((pos_key["y"]/5)+0.5)*0xFFFF),
+                int(((pos_key["z"]/5)+0.5)*0xFFFF)
+            )
+    
+    result += struct.pack("<L", len(data["constraints"]))
+    
+    for constraint in data["constraints"]:
+        result += struct.pack("<BB16sfff16sffffffffff",
+            constraint["chain_length"],
+            constraint["constraint_type"],
+            (constraint["source_volume"].encode()+(b"\0"*16))[0:16],
+            constraint["source_offset"][0],
+            constraint["source_offset"][1],
+            constraint["source_offset"][2],
+            (constraint["target_volume"].encode()+(b"\0"*16))[0:16],
+            constraint["target_offset"][0],
+            constraint["target_offset"][1],
+            constraint["target_offset"][2],
+            constraint["target_dir"][0],
+            constraint["target_dir"][1],
+            constraint["target_dir"][2],
+            constraint["ease_in_start"],
+            constraint["ease_in_stop"],
+            constraint["ease_out_start"],
+            constraint["ease_out_stop"]
+        )
+    
+    return result
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Dump Second Life .anim files to json because why not.')
+    parser.add_argument('input', help='Input')
+    parser.add_argument('output', help='Output')
+    args = parser.parse_args()
+    
+    with open(args.input, "rb") as f:
+        with open(args.output, "wb") as ff:
+            inputFormat = args.input.lower().split(".")[-1]
+            outputFormat = args.output.lower().split(".")[-1]
+            if inputFormat == "anim" and outputFormat == "json":
+                ff.write(json.dumps(parseAnim(f.read()), sort_keys=True, indent=4).encode())
+            elif inputFormat == "json" and outputFormat == "anim":
+                ff.write(parseObj(json.loads(f.read().decode())))
+            else:
+                print("NOT SURE ABOUT THAT ONE CHIEF")
