@@ -3,6 +3,60 @@ import struct
 import argparse
 import json
 
+class CustomJsonEncoder(json.JSONEncoder):
+    def iterencode(self, o, _one_shot=False):
+        """Encode the given object and yield each string
+        representation as available.
+        For example::
+            for chunk in JSONEncoder().iterencode(bigobject):
+                mysocket.write(chunk)
+        """
+        if self.check_circular:
+            markers = {}
+        else:
+            markers = None
+        if self.ensure_ascii:
+            _encoder = json.encoder.encode_basestring_ascii
+        else:
+            _encoder = json.encoder.encode_basestring
+        
+        INFINITY = float("inf")
+        def floatstr(o, allow_nan=False,
+                _repr=float.__repr__, _inf=INFINITY, _neginf=-INFINITY):
+            # Check for specials.  Note that this type of test is processor
+            # and/or platform-specific, so do tests which don't depend on the
+            # internals.
+
+            if o != o:
+                text = 'NaN'
+            elif o == _inf:
+                text = 'Infinity'
+            elif o == _neginf:
+                text = '-Infinity'
+            else:
+                return "{:f}".format(o)
+
+            if not allow_nan:
+                raise ValueError(
+                    "Out of range float values are not JSON compliant: " +
+                    repr(o))
+
+            return text
+
+
+        if (_one_shot and json.encoder.c_make_encoder is not None
+                and self.indent is None):
+            _iterencode = json.encoder.c_make_encoder(
+                markers, self.default, _encoder, self.indent,
+                self.key_separator, self.item_separator, self.sort_keys,
+                self.skipkeys, self.allow_nan)
+        else:
+            _iterencode = json.encoder._make_iterencode(
+                markers, self.default, _encoder, self.indent, floatstr,
+                self.key_separator, self.item_separator, self.sort_keys,
+                self.skipkeys, _one_shot)
+        return _iterencode(o, 0)
+
 def parseAnim(data):
     result = {}
     offset = 0
@@ -96,9 +150,9 @@ def parseAnim(data):
         result["constraints"].append({
             "chain_length": chain_length,
             "constraint_type": constraint_type,
-            "source_volume": source_volume.strip(b"\0").decode(),
+            "source_volume": source_volume.split(b"\0",1)[0].decode(),
             "source_offset": [source_offset_x, source_offset_y, source_offset_z],
-            "target_volume": target_volume.strip(b"\0").decode(),
+            "target_volume": target_volume.split(b"\0",1)[0].decode(),
             "target_offset": [target_offset_x, target_offset_y, target_offset_z],
             "target_dir": [target_dir_x, target_dir_y, target_dir_z],
             "ease_in_start": ease_in_start,
@@ -197,8 +251,8 @@ if __name__ == "__main__":
             inputFormat = args.input.lower().split(".")[-1]
             outputFormat = args.output.lower().split(".")[-1]
             if inputFormat == "anim" and outputFormat == "json":
-                ff.write(json.dumps(parseAnim(f.read()), sort_keys=True, indent=4).encode())
+                ff.write(json.dumps(parseAnim(f.read()), sort_keys=True, indent=4, cls=CustomJsonEncoder).encode())
             elif inputFormat == "json" and outputFormat == "anim":
                 ff.write(parseObj(json.loads(f.read().decode())))
             else:
-                print("NOT SURE ABOUT THAT ONE CHIEF")
+                print("CHOOSE EITHER ANIM TO JSON OR JSON TO ANIM, NOT ANIM TO ANIM OR JSON TO JSON YOU DINGUS")
