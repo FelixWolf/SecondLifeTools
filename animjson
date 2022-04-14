@@ -125,12 +125,12 @@ def parseAnim(data):
         offset = offset + 4
         
         for x in range(num_pos_keys):
-            time, rot_x, rot_y, rot_z = struct.unpack_from("<HHHH", data, offset)
+            time, pos_x, pos_y, pos_z = struct.unpack_from("<HHHH", data, offset)
             jointResult["position_keys"].append({
                 "time": time,
-                "x": ((rot_x/0xFFFF)-0.5)*5,
-                "y": ((rot_y/0xFFFF)-0.5)*5,
-                "z": ((rot_z/0xFFFF)-0.5)*5
+                "x": ((pos_x/0xFFFF)-0.5)*10,
+                "y": ((pos_y/0xFFFF)-0.5)*10,
+                "z": ((pos_z/0xFFFF)-0.5)*10
             })
             offset = offset + 8
         
@@ -210,9 +210,9 @@ def parseObj(data):
             pos_key["z"] = min(max(-1,pos_key["z"]),1)
             result += struct.pack("<HHHH",
                 pos_key["time"],
-                int(((pos_key["x"]/5)+0.5)*0xFFFF),
-                int(((pos_key["y"]/5)+0.5)*0xFFFF),
-                int(((pos_key["z"]/5)+0.5)*0xFFFF)
+                int(((pos_key["x"]/10)+0.5)*0xFFFF),
+                int(((pos_key["y"]/10)+0.5)*0xFFFF),
+                int(((pos_key["z"]/10)+0.5)*0xFFFF)
             )
     
     result += struct.pack("<L", len(data["constraints"]))
@@ -250,9 +250,9 @@ if __name__ == "__main__":
         with open(args.output, "wb") as ff:
             inputFormat = args.input.lower().split(".")[-1]
             outputFormat = args.output.lower().split(".")[-1]
-            if inputFormat == "anim" and outputFormat == "json":
+            if (inputFormat == "anim" or inputFormat == "animatn") and outputFormat == "json":
                 ff.write(json.dumps(parseAnim(f.read()), sort_keys=True, indent=4, cls=CustomJsonEncoder).encode())
-            elif inputFormat == "json" and outputFormat == "anim":
+            elif inputFormat == "json" and (outputFormat == "anim" or outputFormat == "animatn"):
                 ff.write(parseObj(json.loads(f.read().decode())))
             else:
                 print("CHOOSE EITHER ANIM TO JSON OR JSON TO ANIM, NOT ANIM TO ANIM OR JSON TO JSON YOU DINGUS")
