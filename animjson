@@ -2,6 +2,10 @@
 import struct
 import argparse
 import json
+import math
+
+RAD_TO_DEG = 57.295779513082320876798154814105
+DEG_TO_RAD = 0.017453292519943295769236907684886
 
 class CustomJsonEncoder(json.JSONEncoder):
     def iterencode(self, o, _one_shot=False):
@@ -57,11 +61,102 @@ class CustomJsonEncoder(json.JSONEncoder):
                 self.skipkeys, _one_shot)
         return _iterencode(o, 0)
 
+def RotToEuler(x, y, z, w = None):
+    if w == None:
+        w = 1.0 - math.sqrt(x * x + y * y + z * z)
+        if w > 0:
+            w = math.sqrt(w)
+        else:
+            w = 0
+    
+    sx = 2 * (x * w - y * z)
+    sy = 2 * (y * w + x * z)
+    ys = w * w - y * y
+    xz = x * x - z * z
+    cx = ys - xz
+    cy = math.sqrt(sx * sx + cx * cx)
+    
+    if cy > 0.000436:
+        return (
+            math.atan2(sx, cx),
+            math.atan2(sy, cy),
+            math.atan2(2 * (z * w - x * y), ys + xz)
+        )
+    
+    elif sy > 0: #The jimble is funny
+        return 0, math.pi / 2, 2 * math.atan2(z + x, w + y)
+    
+    else: #The jimble is hilarious
+        return 0, -math.pi / 2, 2 * math.atan2(z - x, w - y)
+
+def qMult(a, b):
+    return (
+        b[3] * a[0] + b[0] * a[3] + b[1] * a[2] - b[2] * a[1],
+        b[3] * a[1] + b[1] * a[3] + b[2] * a[0] - b[0] * a[2],
+        b[3] * a[2] + b[2] * a[3] + b[0] * a[1] - b[1] * a[0],
+        b[3] * a[3] - b[0] * a[0] - b[1] * a[1] - b[2] * a[2]
+    )
+
+def EulerToQuat(angle, direction):
+    mag = math.sqrt(
+        direction[0] * direction[0]
+      + direction[1] * direction[1]
+      + direction[2] * direction[2]
+    )
+    if mag > 0.0000001:
+        angle *= 0.5
+        s = math.sin(angle) / mag
+        return (
+            direction[0] * s,
+            direction[1] * s,
+            direction[2] * s,
+            math.cos(angle)
+        )
+    else:
+        return (0, 0, 0, 0)
+
+#Is this even needed?
+def quantize16(e):
+    x, y, z, w = (
+        ((int(((e[0] + 1) / 2) * 0xFFFF)/0xFFFF) * 2) - 1,
+        ((int(((e[1] + 1) / 2) * 0xFFFF)/0xFFFF) * 2) - 1,
+        ((int(((e[2] + 1) / 2) * 0xFFFF)/0xFFFF) * 2) - 1,
+        ((int(((e[3] + 1) / 2) * 0xFFFF)/0xFFFF) * 2) - 1
+    )
+    mag = math.sqrt(x * x + y * y + z * z + w * w)
+
+    if mag > 0.0000001:
+        if math.fabs(1 - mag) > 0.000001:
+            m = 1/mag
+            x *= m
+            y *= m
+            z *= m
+            w *= m
+    else:
+        x, y, z, w = (0,0,0,1)
+    
+    return (x, y, z, w)
+
+def EulerToRot(x, y, z):
+    return qMult(
+        qMult(
+            EulerToQuat(x, (1,0,0)),
+            EulerToQuat(y, (0,1,0))
+        ),
+        EulerToQuat(z, (0,0,1))
+    )
+
+sAnimHeader = struct.Struct("<HHLf")
+sAnimParams = struct.Struct("<ffLffLL")
+sAnimFrame = struct.Struct("<HHHH")
+sAnimUInt32 = struct.Struct("<I") #Used for various stuff
+sAnimConstraint = struct.Struct("<BB16sfff16sffffffffff")
+
 def parseAnim(data):
     result = {}
     offset = 0
     
-    version, sub_version, base_priority, duration = struct.unpack_from("<HHLf", data, offset)
+    version, sub_version, base_priority, duration = sAnimHeader.unpack_from(data, offset)
     offset = offset + 12
     
     emote_name = ""
@@ -73,7 +168,7 @@ def parseAnim(data):
     
     loop_in_point, loop_out_point, loop, ease_in_duration, \
         ease_out_duration, hand_pose, num_joints \
-        = struct.unpack_from("<ffLffLL", data, offset)
+        = sAnimParams.unpack_from(data, offset)
     
     offset = offset + 28
     
@@ -101,8 +196,8 @@ def parseAnim(data):
         
         offset = offset + 1
         
-        joint_priority, num_rot_keys = struct.unpack_from("<LL", data, offset)
-        offset = offset + 8
+        joint_priority, = sAnimUInt32.unpack_from(data, offset)
+        offset = offset + 4
         
         jointResult = {
             "name": joint_name,
@@ -111,32 +206,41 @@ def parseAnim(data):
             "position_keys": []
         }
         
+        num_rot_keys, = sAnimUInt32.unpack_from(data, offset)
+        offset = offset + 4
         for x in range(num_rot_keys):
-            time, rot_x, rot_y, rot_z = struct.unpack_from("<HHHH", data, offset)
+            time, rot_x, rot_y, rot_z = sAnimFrame.unpack_from(data, offset)
+            rot_x, rot_y, rot_z = RotToEuler(
+                ((rot_x/0xFFFF) * 2) - 1,
+                ((rot_y/0xFFFF) * 2) - 1,
+                ((rot_z/0xFFFF) * 2) - 1,
+            )
+            
             jointResult["rotation_keys"].append({
                 "time": time,
-                "x": ((rot_x/0xFFFF)-0.5)*2,
-                "y": ((rot_y/0xFFFF)-0.5)*2,
-                "z": ((rot_z/0xFFFF)-0.5)*2
+                "x": rot_x * RAD_TO_DEG,
+                "y": rot_y * RAD_TO_DEG,
+                "z": rot_z * RAD_TO_DEG
             })
+            
             offset = offset + 8
         
-        num_pos_keys, = struct.unpack_from("<L", data, offset)
+        num_pos_keys, = sAnimUInt32.unpack_from(data, offset)
         offset = offset + 4
         
         for x in range(num_pos_keys):
-            time, pos_x, pos_y, pos_z = struct.unpack_from("<HHHH", data, offset)
+            time, pos_x, pos_y, pos_z = sAnimFrame.unpack_from(data, offset)
             jointResult["position_keys"].append({
                 "time": time,
-                "x": ((pos_x/0xFFFF)-0.5)*10,
-                "y": ((pos_y/0xFFFF)-0.5)*10,
-                "z": ((pos_z/0xFFFF)-0.5)*10
+                "x": ((pos_x/0xFFFF)-0.5)*5,
+                "y": ((pos_y/0xFFFF)-0.5)*5,
+                "z": ((pos_z/0xFFFF)-0.5)*5
             })
             offset = offset + 8
         
         result["joints"].append(jointResult)
     
-    num_constraints, = struct.unpack_from("<L", data, offset)
+    num_constraints, = sAnimUInt32.unpack_from(data, offset)
     offset = offset + 4
     
     for i in range(num_constraints):
@@ -144,7 +248,7 @@ def parseAnim(data):
         source_offset_y, source_offset_z, target_volume, target_offset_x, \
         target_offset_y, target_offset_z, target_dir_x, target_dir_y, \
         target_dir_z, ease_in_start, ease_in_stop, ease_out_start, \
-        ease_out_stop = struct.unpack_from("<BB16sfff16sffffffffff", data, offset)
+        ease_out_stop = sAnimConstraint.unpack_from(data, offset)
         offset = offset + 86
         
         result["constraints"].append({
@@ -166,14 +270,14 @@ def parseAnim(data):
 
 def parseObj(data):
     result = b""
-    result += struct.pack("<HHLf",
+    result += sAnimHeader.pack(
         data["version"],
         data["sub_version"],
         data["base_priority"],
         data["duration"]
     )
     result += data["emote_name"].encode() + b"\0"
-    result += struct.pack("<ffLffLL",
+    result += sAnimParams.pack(
         data["loop_in_point"],
         data["loop_out_point"],
         data["loop"],
@@ -186,39 +290,58 @@ def parseObj(data):
     for joint in data["joints"]:
         result += joint["name"].encode() + b"\0"
         
-        result += struct.pack("<LL",
-            joint["priority"],
-            len(joint["rotation_keys"])
-        )
+        result += sAnimUInt32.pack(joint["priority"])
+        
+        result += sAnimUInt32.pack(len(joint["rotation_keys"]))
         
         for rot_key in joint["rotation_keys"]:
-            rot_key["x"] = min(max(-1,rot_key["x"]),1)
-            rot_key["y"] = min(max(-1,rot_key["y"]),1)
-            rot_key["z"] = min(max(-1,rot_key["z"]),1)
-            result += struct.pack("<HHHH",
+            rot_x, rot_y, rot_z, rot_w = EulerToRot(
+                rot_key["x"] * DEG_TO_RAD,
+                rot_key["y"] * DEG_TO_RAD,
+                rot_key["z"] * DEG_TO_RAD
+            )
+            
+            mag = math.sqrt(rot_x * rot_x + rot_y * rot_y + rot_z * rot_z + rot_w * rot_w)
+            
+            if mag > 0.0000001:
+                rot_x /= mag
+                rot_y /= mag
+                rot_z /= mag
+                rot_w /= mag
+            
+            if rot_w < 0:
+                rot_x = -rot_x
+                rot_y = -rot_y
+                rot_z = -rot_z
+                rot_w = -rot_w
+            
+            #Might not be needed but do it anyway
+            rot_x, rot_y, rot_z, rot_w = quantize16((rot_x, rot_y, rot_z, rot_w))
+            
+            result += sAnimFrame.pack(
                 rot_key["time"],
-                int(((rot_key["x"]/2)+0.5)*0xFFFF),
-                int(((rot_key["y"]/2)+0.5)*0xFFFF),
-                int(((rot_key["z"]/2)+0.5)*0xFFFF)
+                int(((rot_x + 1) / 2) * 0xFFFF),
+                int(((rot_y + 1) / 2) * 0xFFFF),
+                int(((rot_z + 1) / 2) * 0xFFFF)
             )
         
-        result += struct.pack("<L", len(joint["position_keys"]))
+        result += sAnimUInt32.pack(len(joint["position_keys"]))
         
         for pos_key in joint["position_keys"]:
             pos_key["x"] = min(max(-1,pos_key["x"]),1)
             pos_key["y"] = min(max(-1,pos_key["y"]),1)
             pos_key["z"] = min(max(-1,pos_key["z"]),1)
-            result += struct.pack("<HHHH",
+            result += sAnimFrame.pack(
                 pos_key["time"],
-                int(((pos_key["x"]/10)+0.5)*0xFFFF),
-                int(((pos_key["y"]/10)+0.5)*0xFFFF),
-                int(((pos_key["z"]/10)+0.5)*0xFFFF)
+                int(((pos_key["x"]/5)+0.5)*0xFFFF),
+                int(((pos_key["y"]/5)+0.5)*0xFFFF),
+                int(((pos_key["z"]/5)+0.5)*0xFFFF)
             )
     
-    result += struct.pack("<L", len(data["constraints"]))
+    result += sAnimUInt32.pack(len(data["constraints"]))
     
     for constraint in data["constraints"]:
-        result += struct.pack("<BB16sfff16sffffffffff",
+        result += sAnimConstraint.pack(
             constraint["chain_length"],
             constraint["constraint_type"],
             (constraint["source_volume"].encode()+(b"\0"*16))[0:16],
