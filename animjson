@@ -63,31 +63,23 @@ class CustomJsonEncoder(json.JSONEncoder):
 
 def RotToEuler(x, y, z, w = None):
     if w == None:
-        w = 1.0 - math.sqrt(x * x + y * y + z * z)
-        if w > 0:
-            w = math.sqrt(w)
-        else:
-            w = 0
+        w = 1.0 - (x * x + y * y + z * z)
+        w = math.sqrt(w) if w > 0 else 0
+
+    t0 = +2.0 * (w * x + y * z)
+    t1 = +1.0 - 2.0 * (x * x + y * y)
+    roll_x = math.atan2(t0, t1)
     
-    sx = 2 * (x * w - y * z)
-    sy = 2 * (y * w + x * z)
-    ys = w * w - y * y
-    xz = x * x - z * z
-    cx = ys - xz
-    cy = math.sqrt(sx * sx + cx * cx)
+    t2 = +2.0 * (w * y - z * x)
+    t2 = +1.0 if t2 > +1.0 else t2
+    t2 = -1.0 if t2 < -1.0 else t2
+    pitch_y = math.asin(t2)
     
-    if cy > 0.000436:
-        return (
-            math.atan2(sx, cx),
-            math.atan2(sy, cy),
-            math.atan2(2 * (z * w - x * y), ys + xz)
-        )
+    t3 = +2.0 * (w * z + x * y)
+    t4 = +1.0 - 2.0 * (y * y + z * z)
+    yaw_z = math.atan2(t3, t4)
     
-    elif sy > 0: #The jimble is funny
-        return 0, math.pi / 2, 2 * math.atan2(z + x, w + y)
-    
-    else: #The jimble is hilarious
-        return 0, -math.pi / 2, 2 * math.atan2(z - x, w - y)
+    return roll_x, pitch_y, yaw_z
 
 def qMult(a, b):
     return (
